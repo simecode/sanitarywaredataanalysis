@@ -1,0 +1,142 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import requests
+import io
+
+# ================= 页面配置 =================
+st.set_page_config(page_title="6910 卫浴出口市场观察智库", layout="wide")
+st.title("📊 6910 陶瓷卫浴进出口数据洞察")
+
+# ================= 侧边栏配置 =================
+with st.sidebar:
+    st.header("⚙️ 引擎配置")
+    analysis_mode = st.radio("选择分析维度", ["年度全景统计", "月度/前N月动态"])
+    
+    # 推荐后续在 Streamlit Secrets 中配置，这里保留输入框方便初期测试
+    openrouter_key = st.text_input("OpenRouter API Key", type="password", help="输入你的专属密钥")
+    
+    st.markdown("---")
+    st.header("📂 数据源上传")
+    map_file = st.file_uploader("1. 上传区域映射表", type=['xlsx'])
+    raw_files = st.file_uploader("2. 上传原始海关数据 (支持多选)", type=['xlsx'], accept_multiple_files=True)
+
+# ================= 核心处理函数 =================
+@st.cache_data
+def process_data(map_file, raw_files, mode):
+    # 读取映射表
+    try:
+        map_df = pd.read_excel(map_file, sheet_name="区域映射")
+        region_dict = dict(zip(map_df["原始名称"], map_df["子区域"]))
+    except:
+        region_dict = {}
+
+    # 读取原始数据
+    all_data = []
+    for file in raw_files:
+        df = pd.read_excel(file)
+        cols = ["商品编码", "商品名称", "贸易伙伴编码", "贸易伙伴名称",
+                "注册地编码", "注册地名称", "贸易类型", "金额_美元", "统计年份"]
+        df = df[[c for c in cols if c in df.columns]]
+        df = df.dropna(subset=["贸易伙伴名称", "金额_美元"])
+        df["金额_美元"] = pd.to_numeric(df["金额_美元"], errors='coerce').fillna(0)
+        df["贸易伙伴名称"] = df["贸易伙伴名称"].str.strip()
+        df["统计年份"] = df["统计年份"].astype(str).str[:4]
+        df["所属区域"] = df["贸易伙伴名称"].map(region_dict).fillna("其他")
+        all_data.append(df)
+        
+    all_df = pd.concat(all_data, ignore_index=True)
+    
+    # 核心统计逻辑 (目的地视角)
+    partner_summary = all_df.groupby(["统计年份", "贸易伙伴名称", "所属区域", "贸易类型"], as_index=False)["金额_美元"].sum()
+    partner_summary = partner_summary.sort_values(["贸易伙伴名称", "统计年份"])
+    partner_summary["上期金额_美元"] = partner_summary.groupby("贸易伙伴名称")["金额_美元"].shift(1)
+    partner_summary["同比变化"] = (partner_summary["金额_美元"] - partner_summary["上期金额_美元"]) / partner_summary["上期金额_美元"].replace(0, 1)
+    
+    export_partner = partner_summary[partner_summary["贸易类型"] == "出口"].copy()
+    
+    return all_df, export_partner
+
+# ================= 业务执行流 =================
+if map_file and raw_files:
+    if st.button("🚀 开始数据解码与生成"):
+        with st.spinner("正在清洗海关数据并绘制洞察图表..."):
+            all_df, export_partner = process_data(map_file, raw_files, analysis_mode)
+            
+            # 获取最新年份数据做展示
+            latest_year = export_partner['统计年份'].max()
+            latest_data = export_partner[export_partner['统计年份'] == latest_year].sort_values("金额_美元", ascending=False).head(10)
+            
+            # 布局展示
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader(f"🏆 {latest_year}年 前十大出口目的地")
+                fig1 = px.bar(latest_data, x="贸易伙伴名称", y="金额_美元", color="所属区域", text_auto='.2s')
+                st.plotly_chart(fig1, use_container_width=True)
+                
+            with col2:
+                st.subheader("📈 核心市场同比增跌幅")
+                latest_data['同比%'] = latest_data['同比变化'] * 100
+                fig2 = px.scatter(latest_data, x="金额_美元", y="同比%", color="所属区域", size="金额_美元", hover_name="贸易伙伴名称")
+                st.plotly_chart(fig2, use_container_width=True)
+
+            # 导出数据准备
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                export_partner.to_excel(writer, sheet_name="出口目的地明细", index=False)
+                all_df.to_excel(writer, sheet_name="清洗后底层数据", index=False)
+            
+            st.download_button(
+                label="📥 下载完整清洗统计数据包 (Excel)",
+                data=output.getvalue(),
+                file_name=f"6910_市场洞察数据底稿_{latest_year}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+            # ================= AI 撰稿模块 =================
+            st.markdown("---")
+            st.header("✍️ 审美智库 AI 洞察报告生成")
+            
+            # 提取核心数据喂给 AI
+            data_context = latest_data[['贸易伙伴名称', '所属区域', '金额_美元', '同比%']].to_string()
+            
+            if openrouter_key:
+                # 针对你的专业定位优化的系统提示词
+                system_prompt = """
+                你是一位资深的行业和市场观察者，面对专业的泛家居和卫浴市场进行深度解读。
+                请根据以下海关 6910 编码（卫生陶瓷）的最新出口数据，撰写一篇约 1500 字的深度市场观察文章。
+                重点要求：
+                1. 语调需保持思想领导力，客观、深刻，摒弃传统销售说辞。
+                2. 结合“栖居的美学”理念，以及宏观层面的供应链转移（如中美贸易摩擦带来的China+1战略、原材料波动影响等）进行数据拆解。
+                3. 分析前十大出口国的格局变化，挖掘数据背后的全球产线重构逻辑。
+                请直接输出文章正文，结构清晰，适合在高端行业论坛或媒体发表。
+                """
+                
+                with st.spinner("AI 正在深度思考并撰写行业观察报告..."):
+                    headers = {
+                        "Authorization": f"Bearer {openrouter_key}",
+                        "HTTP-Referer": "https://github.com/",
+                        "X-Title": "6910 Market Observer"
+                    }
+                    data = {
+                        "model": "deepseek/deepseek-chat:free", # 默认调用免费模型
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": f"以下是最新核心出口数据：\n{data_context}\n请开始撰写分析："}
+                        ]
+                    }
+                    
+                    try:
+                        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
+                        if response.status_code == 200:
+                            report = response.json()['choices'][0]['message']['content']
+                            st.success("报告生成完毕！")
+                            st.text_area("文章初稿 (可直接复制修改)", report, height=500)
+                        else:
+                            st.error(f"AI 调用异常，请检查 API Key 或网络状态: {response.text}")
+                    except Exception as e:
+                        st.error(f"请求失败: {str(e)}")
+            else:
+                st.warning("⚠️ 请在左侧边栏填入 OpenRouter API Key 以解锁一键生成文章功能。")
+else:
+    st.info("👈 请在左侧边栏上传「区域映射表」和「海关原始数据」以启动智库引擎。")
