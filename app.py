@@ -7,7 +7,7 @@ import os
 
 # ================= 核心配置区 =================
 # 1. 在这里填入你的 OpenRouter API Key (保留引号)
-BUILTIN_API_KEY = "sk-or-v1-这里替换成你真实的API_KEY"
+BUILTIN_API_KEY = "openai/gpt-oss-20b:free"
 
 # 2. 内置的区域映射表文件名 (请确保该文件已上传至 GitHub 仓库)
 MAPPING_FILE_NAME = "区域映射表.xlsx"
