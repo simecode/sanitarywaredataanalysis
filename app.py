@@ -41,41 +41,51 @@ FIELD_SPECS = {
     "贸易伙伴名称": {
         "label": "目的地国家/地区 *",
         "required": True,
-        "candidates": ["贸易伙伴名称","贸易伙伴名称称","贸易伙伴名","国家/地区","国家地区","目的地","country","Country","COUNTRY",
-                       "Partner","partner","Trade Partner","destination","Destination","Country/Region"],
+        "candidates": ["贸易伙伴名称","贸易伙伴名称称","贸易伙伴名","国家/地区","国家地区","目的地",
+                       "partnerDesc","PartnerDesc","partner_desc","partnerName","partner",
+                       "country","Country","COUNTRY","Partner","Trade Partner",
+                       "destination","Destination","Country/Region","CountryName"],
     },
     "金额_美元": {
         "label": "出口金额（美元）*",
         "required": True,
-        "candidates": ["金额_美元","美元","出口金额_美元","金额（美元）","金额(美元)","USD","Amount_USD","Value_USD",
-                       "Export Value","export_value","金额","Amount","Value","usd_value","usd_amount"],
+        "candidates": ["金额_美元","美元","出口金额_美元","金额（美元）","金额(美元)",
+                       "fobvalue","fobValue","FOBValue","fob_value","tradeValue","TradeValue",
+                       "USD","Amount_USD","Value_USD","Export Value","export_value",
+                       "金额","Amount","Value","usd_value","usd_amount"],
     },
     "注册地名称": {
-        "label": "注册地/省份",
+        "label": "注册地/省份（中方报告方）",
         "required": False,
-        "candidates": ["注册地名称","注册地","省份","出口地区","企业注册地","Province","province","Region","region",
-                       "Registered Region","Origin Province"],
+        "candidates": ["注册地名称","注册地","省份","出口地区","企业注册地",
+                       "reporterDesc","ReporterDesc","reporter_desc","reporterName","reporter",
+                       "Province","province","Region","region","Registered Region","Origin Province"],
     },
     "贸易类型": {
         "label": "贸易类型（出口/进口）",
         "required": False,
-        "candidates": ["贸易类型","进出口类型","贸易方式","Trade Type","trade_type","Type","type","Direction"],
+        "candidates": ["贸易类型","进出口类型","贸易方式",
+                       "flowDesc","FlowDesc","flow_desc","flowCode","flow",
+                       "Trade Type","trade_type","Type","type","Direction","direction"],
     },
     "数量_统一": {
         "label": "数量/重量（用于计算单价）",
         "required": False,
         "candidates": ["数量","第一法定数量","统计数量","法定数量","净重（千克）","总重量（千克）","重量",
-                       "Quantity","quantity","Weight","weight","Net Weight","net_weight","Qty","qty"],
+                       "netWgt","NetWgt","net_wgt","netWeight","grossWgt","qty","Qty",
+                       "Quantity","quantity","Weight","weight","Net Weight","net_weight"],
     },
     "数据年月": {
         "label": "年月（月度模式用）",
         "required": False,
-        "candidates": ["数据年月","年月","统计月份","月份","报告期","Year Month","YearMonth","Date","date","Period"],
+        "candidates": ["数据年月","年月","统计月份","月份","报告期",
+                       "period","Period","PERIOD","yearMonth","YearMonth","Date","date"],
     },
     "统计年份": {
-        "label": "统计年份",
+        "label": "统计年份（或含年月的period列）",
         "required": False,
-        "candidates": ["统计年份","年份","Year","year","YEAR","fiscal_year","统计年度"],
+        "candidates": ["统计年份","年份",
+                       "period","Period","PERIOD","year","Year","YEAR","fiscal_year","统计年度","refYear"],
     },
 }
 
@@ -98,12 +108,24 @@ def guess_column(df_cols, candidates):
     return None
 
 def extract_year_from_df(df, year_col, filename=""):
-    """从年份列或文件名中提取四位年份"""
+    """
+    从年份列或文件名中提取四位年份。
+    兼容多种格式：
+      - 纯年份：2023、"2023"
+      - 年月合并：202301、"202301"、"2023-01"、"2023/01"、"202301.0"
+      - 带时间戳：20230115
+    取众数年份，避免混合数据误判。
+    """
     if year_col and year_col in df.columns:
         vals = df[year_col].dropna().astype(str).str.strip()
-        valid = vals.str.extract(r'(20\d{2})')[0].dropna()
-        if not valid.empty:
-            return valid.mode()[0]
+        # 统一去掉小数点后缀（如 202301.0 → 202301）
+        vals = vals.str.replace(r'\.0+$', '', regex=True)
+        # 提取最前面的4位合法年份
+        extracted = vals.str.extract(r'^(20\d{2})')[0].dropna()
+        if not extracted.empty:
+            year = extracted.mode()[0]
+            return year
+    # 从文件名兜底
     m = re.search(r'(20\d{2})', filename)
     if m:
         return m.group(1)
@@ -182,19 +204,39 @@ st.markdown("---")
 
 # --- Step 3: 贸易类型值配置 ---
 trade_col = col_mapping.get("贸易类型")
-export_keyword = "出口"
+export_keyword = None   # None = 不过滤（全量视为出口）
+skip_trade_filter = True
+
 if trade_col:
     st.markdown("### 贸易类型筛选配置")
-    # 采样实际值
-    first_df_sample = pd.read_excel(io.BytesIO(file_bytes_map[list(file_bytes_map.keys())[0]]), nrows=200)
+    first_df_sample = pd.read_excel(io.BytesIO(file_bytes_map[list(file_bytes_map.keys())[0]]), nrows=500)
     if trade_col in first_df_sample.columns:
-        sample_vals = first_df_sample[trade_col].dropna().astype(str).unique().tolist()
-        st.caption(f"该列实际值示例：{sample_vals[:8]}")
-        export_keyword = st.text_input(
-            "「出口」的标识值（与上方示例对应）",
-            value="出口" if "出口" in sample_vals else (sample_vals[0] if sample_vals else "出口"),
-            help="如数据是英文，可填 Export 或 E 等实际值"
+        sample_vals = sorted(first_df_sample[trade_col].dropna().astype(str).str.strip().unique().tolist())
+        st.caption(f"该列全部实际值：**{sample_vals}**")
+
+        # 智能预选：优先匹配包含 export/出口 的值
+        default_export = next(
+            (v for v in sample_vals if v.lower() in ["export","出口","e","x","exports"]),
+            sample_vals[0] if sample_vals else "Export"
         )
+        no_filter_opt = "— 不过滤（全部数据视为出口）—"
+        all_options = [no_filter_opt] + sample_vals
+        default_idx = all_options.index(default_export) if default_export in all_options else 0
+
+        chosen_trade = st.selectbox(
+            "选择代表「出口」的值",
+            options=all_options,
+            index=default_idx,
+            help="直接点选上方实际值，无需手动输入"
+        )
+        if chosen_trade == no_filter_opt:
+            export_keyword = None
+            skip_trade_filter = True
+            st.info("ℹ️ 将使用全部数据，不按贸易类型过滤。")
+        else:
+            export_keyword = chosen_trade
+            skip_trade_filter = False
+            st.success(f"✅ 将筛选「{export_keyword}」的数据行")
     st.markdown("---")
 
 # --- Step 4: 开始分析 ---
@@ -241,20 +283,23 @@ if st.button("🚀 开始分析", type="primary"):
                 continue
             df["统计年份"] = year_str
 
-            # 月度筛选
+            # 月度筛选（兼容 202301、2023-01、2023/01 等格式）
             if analysis_mode == "月度/前N月动态" and n_months and "数据年月" in df.columns:
-                df["数据年月"] = df["数据年月"].astype(str).str.strip()
-                suffixes = tuple(str(i).zfill(2) for i in range(1, n_months + 1))
+                ym = df["数据年月"].astype(str).str.strip().str.replace(r'\.0+$', '', regex=True)
+                # 提取月份数字：取去掉年份后的最后2位数字
+                month_nums = ym.str.extract(r'20\d{2}[\-/]?(\d{2})')[0]
+                valid_months = set(str(i).zfill(2) for i in range(1, n_months + 1))
                 before = len(df)
-                df = df[df["数据年月"].str[-2:].isin(suffixes)]
+                df = df[month_nums.isin(valid_months)]
                 parse_log.append(f"✅ {fname}（{year_str}）：前{n_months}月筛选 {before}→{len(df)}行")
             else:
                 parse_log.append(f"✅ {fname}（{year_str}）：{len(df)}行")
 
-            # 贸易类型过滤
-            if "贸易类型" in df.columns:
+            # 贸易类型过滤（export_keyword=None 表示不过滤）
+            if "贸易类型" in df.columns and export_keyword is not None:
+                before_filter = len(df)
                 df = df[df["贸易类型"].astype(str).str.strip() == export_keyword]
-            # 若无贸易类型列，默认全部为出口
+                parse_log.append(f"   贸易类型过滤「{export_keyword}」：{before_filter}→{len(df)}行")
             df["贸易类型"] = "出口"
 
             # 数量/重量统一
@@ -279,12 +324,22 @@ if st.button("🚀 开始分析", type="primary"):
         except Exception as e:
             parse_log.append(f"❌ {fname}：{str(e)[:80]}")
 
-    with st.expander("📋 文件解析日志"):
+    with st.expander("📋 文件解析日志", expanded=(len(all_data) == 0)):
         for log in parse_log:
             st.text(log)
 
     if not all_data:
-        st.error("没有成功解析任何数据，请检查字段映射。")
+        st.error("❌ 没有成功解析任何数据，请检查以下情况：")
+        st.markdown("""
+- **贸易类型过滤过严**：若选了「不过滤」仍无结果，检查金额列是否映射正确
+- **年份无法识别**：`period` 列的值格式是否为 `202301` 这类年月格式？系统会自动提取前4位
+- **预览数据**：展开上方日志确认每个文件的解析行数
+        """)
+        # 展示第一个文件实际列值帮助诊断
+        if file_bytes_map:
+            st.markdown("**第一个文件实际数据样本（前10行）：**")
+            diag_df = pd.read_excel(io.BytesIO(list(file_bytes_map.values())[0]), nrows=10)
+            st.dataframe(diag_df, use_container_width=True)
         st.stop()
 
     export_df = pd.concat(all_data, ignore_index=True)
